@@ -2,6 +2,19 @@ import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { Check, RotateCcw, Skull } from 'lucide-react';
 
+// 안전한 폭죽 호출 헬퍼 (모듈 호환성 방어)
+const fireConfetti = (options) => {
+  try {
+    if (typeof confetti === 'function') {
+      confetti(options);
+    } else if (confetti && typeof confetti.default === 'function') {
+      confetti.default(options);
+    }
+  } catch (err) {
+    console.warn('Confetti error:', err);
+  }
+};
+
 export default function LadderBoard({
   players,
   ladderData,
@@ -15,7 +28,6 @@ export default function LadderBoard({
   const [activeTracePoints, setActiveTracePoints] = useState([]);
   const [revealedGoals, setRevealedGoals] = useState({});
 
-  // 게임 종료 상태 및 벌칙 당첨자
   const [isGameOver, setIsGameOver] = useState(false);
   const [bombVictim, setBombVictim] = useState(null);
   const [isShaking, setIsShaking] = useState(false);
@@ -28,8 +40,10 @@ export default function LadderBoard({
   useEffect(() => {
     const updateDimensions = () => {
       if (containerRef.current) {
-        const width = Math.min(containerRef.current.clientWidth, 480);
-        const height = Math.max(380, Math.min(window.innerHeight * 0.54, 460));
+        const clientW = containerRef.current.clientWidth || 380;
+        const width = Math.min(clientW, 480);
+        const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
+        const height = Math.max(380, Math.min(winH * 0.54, 460));
         setDimensions({ width, height });
       }
     };
@@ -39,17 +53,27 @@ export default function LadderBoard({
     return () => window.removeEventListener('resize', updateDimensions);
   }, []);
 
-  const paddingX = Math.max(20, dimensions.width / (colCount * 2.3));
+  const safeColCount = Math.max(colCount || 1, 2);
+  const paddingX = Math.max(20, dimensions.width / (safeColCount * 2.3));
   const paddingY = 24;
-  const colGap = colCount > 1 ? (dimensions.width - paddingX * 2) / (colCount - 1) : 0;
+  const colGap = safeColCount > 1 ? (dimensions.width - paddingX * 2) / (safeColCount - 1) : 0;
   const rowGap = (dimensions.height - paddingY * 2) / (rowCount + 1);
 
   const getColX = (col) => paddingX + col * colGap;
   const getRowY = (row) => paddingY + (row + 1) * rowGap;
 
   const handleSelectPlayer = (playerIndex) => {
-    // 이미 완료되었거나 게임이 종료되었거나 현재 이동 중이면 무시
-    if (playerResults[playerIndex] || isGameOver || activePlayerIndex !== null) return;
+    // 유효성 및 중복 선택 방어
+    if (
+      playerIndex === undefined ||
+      playerIndex === null ||
+      !players[playerIndex] ||
+      playerResults[playerIndex] ||
+      isGameOver ||
+      activePlayerIndex !== null
+    ) {
+      return;
+    }
 
     setActivePlayerIndex(playerIndex);
     setActiveTracePoints([]);
@@ -62,12 +86,14 @@ export default function LadderBoard({
       const currentY = getRowY(r);
       path.push({ x: getColX(currentCol), y: currentY });
 
-      if (currentCol < colCount - 1 && bridges[r][currentCol]) {
-        currentCol += 1;
-        path.push({ x: getColX(currentCol), y: currentY });
-      } else if (currentCol > 0 && bridges[r][currentCol - 1]) {
-        currentCol -= 1;
-        path.push({ x: getColX(currentCol), y: currentY });
+      if (bridges && bridges[r]) {
+        if (currentCol < safeColCount - 1 && bridges[r][currentCol]) {
+          currentCol += 1;
+          path.push({ x: getColX(currentCol), y: currentY });
+        } else if (currentCol > 0 && bridges[r][currentCol - 1]) {
+          currentCol -= 1;
+          path.push({ x: getColX(currentCol), y: currentY });
+        }
       }
     }
 
@@ -79,20 +105,38 @@ export default function LadderBoard({
 
   const animatePath = (playerIndex, path, endCol) => {
     const totalSegments = path.length - 1;
+    if (totalSegments <= 0) {
+      handleArrival(playerIndex, path, endCol);
+      return;
+    }
+
     const segmentDuration = 170;
-    const startTime = performance.now();
     const totalDuration = totalSegments * segmentDuration;
+    let startTime = null;
 
     const tick = (now) => {
-      const elapsed = now - startTime;
+      if (!startTime) {
+        startTime = now;
+      }
+
+      const elapsed = Math.max(0, now - startTime);
       const progress = Math.min(elapsed / totalDuration, 1);
 
       const currentProgressScaled = progress * totalSegments;
-      const segmentIndex = Math.min(Math.floor(currentProgressScaled), totalSegments - 1);
+      const segmentIndex = Math.max(
+        0,
+        Math.min(Math.floor(currentProgressScaled), totalSegments - 1)
+      );
       const segmentProgress = currentProgressScaled - segmentIndex;
 
       const p1 = path[segmentIndex];
       const p2 = path[segmentIndex + 1];
+
+      // 안전 방어
+      if (!p1 || !p2) {
+        handleArrival(playerIndex, path, endCol);
+        return;
+      }
 
       const currentX = p1.x + (p2.x - p1.x) * segmentProgress;
       const currentY = p1.y + (p2.y - p1.y) * segmentProgress;
@@ -105,8 +149,8 @@ export default function LadderBoard({
         x: currentX,
         y: currentY,
         playerIndex,
-        emoji: players[playerIndex].emoji,
-        color: players[playerIndex].color,
+        emoji: players[playerIndex]?.emoji || '🐾',
+        color: players[playerIndex]?.color || '#ffffff',
       });
 
       if (progress < 1) {
@@ -120,7 +164,7 @@ export default function LadderBoard({
   };
 
   const handleArrival = (playerIndex, path, endCol) => {
-    const isBomb = goals[endCol].isBomb;
+    const isBomb = Boolean(goals[endCol]?.isBomb);
     const player = players[playerIndex];
 
     const nextResults = {
@@ -144,7 +188,6 @@ export default function LadderBoard({
     setActiveTracePoints([]);
 
     if (isBomb) {
-      // 1. 벌칙 당첨: 즉시 게임 종료!
       setIsGameOver(true);
       setBombVictim(player);
       setIsShaking(true);
@@ -155,14 +198,14 @@ export default function LadderBoard({
       const colors = ['#ff0033', '#ff4d4d', '#ff8533', '#ffcc00'];
 
       (function frame() {
-        confetti({
+        fireConfetti({
           particleCount: 5,
           angle: 60,
           spread: 55,
           origin: { x: 0 },
           colors,
         });
-        confetti({
+        fireConfetti({
           particleCount: 5,
           angle: 120,
           spread: 55,
@@ -175,14 +218,12 @@ export default function LadderBoard({
         }
       })();
     } else {
-      // 통과: 안전 폭죽 발사
-      confetti({
+      fireConfetti({
         particleCount: 50,
         spread: 60,
         origin: { y: 0.8 },
       });
 
-      // 만약 벌칙이 아닌 상태에서 전원 완주했다면 게임 종료
       if (Object.keys(nextResults).length === players.length) {
         setIsGameOver(true);
       }
@@ -198,13 +239,14 @@ export default function LadderBoard({
   }, []);
 
   const pointsToSvgPath = (points) => {
-    if (!points || points.length === 0) return '';
-    return points.reduce((acc, pt, idx) => {
-      return idx === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
-    }, '');
+    if (!points || !Array.isArray(points) || points.length === 0) return '';
+    return points
+      .filter((pt) => pt && typeof pt.x === 'number' && typeof pt.y === 'number' && !isNaN(pt.x) && !isNaN(pt.y))
+      .map((pt, idx) => (idx === 0 ? `M ${pt.x} ${pt.y}` : `L ${pt.x} ${pt.y}`))
+      .join(' ');
   };
 
-  const isMany = colCount >= 7;
+  const isMany = safeColCount >= 7;
 
   return (
     <div
@@ -278,7 +320,7 @@ export default function LadderBoard({
           </defs>
 
           {/* 세로 기둥 선들 */}
-          {Array.from({ length: colCount }).map((_, c) => {
+          {Array.from({ length: safeColCount }).map((_, c) => {
             const x = getColX(c);
             return (
               <line
@@ -295,30 +337,35 @@ export default function LadderBoard({
           })}
 
           {/* 가로 연결 다리 선들 */}
-          {bridges.map((row, r) => {
-            const y = getRowY(r);
-            return row.map((hasBridge, c) => {
-              if (!hasBridge) return null;
-              const x1 = getColX(c);
-              const x2 = getColX(c + 1);
+          {bridges &&
+            bridges.map((row, r) => {
+              const y = getRowY(r);
               return (
-                <line
-                  key={`bridge-${r}-${c}`}
-                  x1={x1}
-                  y1={y}
-                  x2={x2}
-                  y2={y}
-                  stroke="#38435c"
-                  strokeWidth={isMany ? '2.2' : '3'}
-                  strokeLinecap="round"
-                />
+                row &&
+                row.map((hasBridge, c) => {
+                  if (!hasBridge) return null;
+                  const x1 = getColX(c);
+                  const x2 = getColX(c + 1);
+                  return (
+                    <line
+                      key={`bridge-${r}-${c}`}
+                      x1={x1}
+                      y1={y}
+                      x2={x2}
+                      y2={y}
+                      stroke="#38435c"
+                      strokeWidth={isMany ? '2.2' : '3'}
+                      strokeLinecap="round"
+                    />
+                  );
+                })
               );
-            });
-          })}
+            })}
 
           {/* 이미 완료된 경로 선들 */}
           {Object.entries(playerResults).map(([pIdx, result]) => {
             const p = players[pIdx];
+            if (!p || !result?.pathPoints) return null;
             return (
               <path
                 key={`completed-path-${pIdx}`}
@@ -335,41 +382,45 @@ export default function LadderBoard({
           })}
 
           {/* 현재 이동 중인 경로 */}
-          {activeTracePoints.length > 1 && activePlayerIndex !== null && (
-            <path
-              d={pointsToSvgPath(activeTracePoints)}
-              fill="none"
-              stroke={players[activePlayerIndex].color}
-              strokeWidth={isMany ? '3.5' : '4'}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              filter="url(#glow)"
-            />
-          )}
-
-          {/* 현재 이동 중인 아바타 마커 */}
-          {currentRunner && (
-            <g
-              transform={`translate(${currentRunner.x}, ${currentRunner.y})`}
-              className="transition-transform pointer-events-none"
-            >
-              <circle
-                r={isMany ? '12' : '15'}
-                fill="#181c26"
-                stroke={currentRunner.color}
-                strokeWidth="2.5"
+          {activeTracePoints.length > 1 &&
+            activePlayerIndex !== null &&
+            players[activePlayerIndex] && (
+              <path
+                d={pointsToSvgPath(activeTracePoints)}
+                fill="none"
+                stroke={players[activePlayerIndex].color}
+                strokeWidth={isMany ? '3.5' : '4'}
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 filter="url(#glow)"
               />
-              <text
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={isMany ? '13' : '16'}
-                y="0.5"
+            )}
+
+          {/* 현재 이동 중인 아바타 마커 */}
+          {currentRunner &&
+            !isNaN(currentRunner.x) &&
+            !isNaN(currentRunner.y) && (
+              <g
+                transform={`translate(${currentRunner.x}, ${currentRunner.y})`}
+                className="transition-transform pointer-events-none"
               >
-                {currentRunner.emoji}
-              </text>
-            </g>
-          )}
+                <circle
+                  r={isMany ? '12' : '15'}
+                  fill="#181c26"
+                  stroke={currentRunner.color}
+                  strokeWidth="2.5"
+                  filter="url(#glow)"
+                />
+                <text
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize={isMany ? '13' : '16'}
+                  y="0.5"
+                >
+                  {currentRunner.emoji}
+                </text>
+              </g>
+            )}
         </svg>
 
         {/* 4. 벌칙 당첨 및 게임 종료 시 중앙 임팩트 오버레이 */}
@@ -392,7 +443,10 @@ export default function LadderBoard({
                   </span>
                 </div>
                 <p className="text-[13px] font-extrabold text-white text-center">
-                  <span className="text-rose-400">{bombVictim.label} ({bombVictim.name})</span> 당첨!
+                  <span className="text-rose-400">
+                    {bombVictim.label} ({bombVictim.name})
+                  </span>{' '}
+                  당첨!
                 </p>
               </div>
             ) : (
@@ -422,42 +476,45 @@ export default function LadderBoard({
 
       {/* 3. 하단: 사다리 결과 슬롯 (카드) */}
       <div className="w-full flex items-center justify-between px-1 mt-1 mb-2 gap-1">
-        {goals.map((goal, idx) => {
-          const isRevealed = Boolean(revealedGoals[idx]);
-          return (
-            <div
-              key={goal.id}
-              className={`flex flex-col items-center justify-center rounded-2xl border transition-all duration-300 shadow-md flex-1 min-w-0 ${
-                isMany ? 'py-1.5 px-0.5' : 'p-2'
-              } ${
-                isRevealed
-                  ? goal.isBomb
-                    ? 'border-rose-500 bg-rose-500/30 text-rose-200 scale-105 shadow-[0_0_20px_rgba(244,63,94,0.6)] animate-pulse'
-                    : 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300'
-                  : 'border-gray-800 bg-[#131620] text-gray-500'
-              }`}
-            >
+        {goals &&
+          goals.map((goal, idx) => {
+            const isRevealed = Boolean(revealedGoals[idx]);
+            return (
               <div
-                className={`mb-0.5 ${
-                  isMany ? 'text-[15px] sm:text-[17px]' : 'text-[18px] sm:text-[20px]'
-                }`}
-              >
-                {isRevealed ? (goal.isBomb ? '💣' : '🍀') : '❓'}
-              </div>
-              <span
-                className={`font-bold truncate w-full text-center text-[11px] ${
+                key={goal.id}
+                className={`flex flex-col items-center justify-center rounded-2xl border transition-all duration-300 shadow-md flex-1 min-w-0 ${
+                  isMany ? 'py-1.5 px-0.5' : 'p-2'
+                } ${
                   isRevealed
                     ? goal.isBomb
-                      ? 'text-rose-300 font-extrabold'
-                      : 'text-emerald-400'
-                    : 'text-gray-400'
+                      ? 'border-rose-500 bg-rose-500/30 text-rose-200 scale-105 shadow-[0_0_20px_rgba(244,63,94,0.6)] animate-pulse'
+                      : 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300'
+                    : 'border-gray-800 bg-[#131620] text-gray-500'
                 }`}
               >
-                {isRevealed ? (goal.isBomb ? '벌칙' : '통과') : `목표 ${idx + 1}`}
-              </span>
-            </div>
-          );
-        })}
+                <div
+                  className={`mb-0.5 ${
+                    isMany
+                      ? 'text-[15px] sm:text-[17px]'
+                      : 'text-[18px] sm:text-[20px]'
+                  }`}
+                >
+                  {isRevealed ? (goal.isBomb ? '💣' : '🍀') : '❓'}
+                </div>
+                <span
+                  className={`font-bold truncate w-full text-center text-[11px] ${
+                    isRevealed
+                      ? goal.isBomb
+                        ? 'text-rose-300 font-extrabold'
+                        : 'text-emerald-400'
+                      : 'text-gray-400'
+                  }`}
+                >
+                  {isRevealed ? (goal.isBomb ? '벌칙' : '통과') : `목표 ${idx + 1}`}
+                </span>
+              </div>
+            );
+          })}
       </div>
     </div>
   );
